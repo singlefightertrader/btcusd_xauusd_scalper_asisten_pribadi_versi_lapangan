@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>SCALPER ASSISTANT · FINAL A++ (LOCKED)</title>
+
+<style>
+/* ================== BASE ================== */
+:root{
+  --bg:#000;--panel:#070707;--line:#222;--txt:#eaeaea;
+  --ok:#00ff99;--warn:#ffaa00;--bad:#ff4444;--cyan:#00ffff;
+  --m15:#ffff00;--m30:#00bfff;--h1:#bf00ff;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:Consolas,monospace}
+button,select,input{background:#111;color:#fff;border:1px solid #444;padding:6px;font-family:Consolas}
+button.active{border-color:var(--ok);box-shadow:0 0 8px rgba(0,255,153,.5)}
+button.wait{border-color:#666}
+button.early{border-color:var(--warn)}
+button.standby{border-color:var(--cyan)}
+button.gas{border-color:var(--ok)}
+button.late{border-color:var(--bad)}
+
+#top{display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid var(--line)}
+#status{font-weight:bold}
+#session{color:var(--warn);font-weight:bold}
+
+#tvWrap{position:relative}
+#tv{width:100%;height:38vh;border:none}
+
+#overlay{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+.mline{position:absolute;left:0;right:0;height:1px}
+.m15{background:var(--m15)}
+.m30{background:var(--m30)}
+.h1{background:var(--h1)}
+
+#panel{height:62vh;overflow:auto;padding:8px}
+.section{background:var(--panel);border:1px solid #333;padding:8px;margin-bottom:8px}
+.hidden{display:none}
+.ctx{white-space:pre-line}
+.zone{margin-top:6px;padding:6px;border:1px dashed var(--cyan);color:var(--cyan)}
+.warn{color:var(--bad)}
+.info{color:var(--warn)}
+.ok{color:var(--ok)}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+td,th{border-bottom:1px solid #222;padding:4px}
+
+/* blink */
+@keyframes blink{50%{box-shadow:0 0 10px rgba(255,170,0,.6)}}
+.blink{animation:blink 1.2s infinite}
+</style>
+</head>
+
+<body>
+
+<div id="top">
+  <b>PAIR</b>
+  <select id="pair"><option>BTCUSDT</option><option>XAUUSD</option></select>
+  <span id="session"></span>
+  <b id="status">BOOT</b>
+  <button id="toggleReason">SHOW</button>
+</div>
+
+<div id="tvWrap">
+  <iframe id="tv"></iframe>
+  <div id="overlay"></div>
+</div>
+
+<div id="panel">
+
+<!-- ANCHOR -->
+<div class="section">
+<b>ANCHOR H1 · MANUAL OHLC</b><br/>
+O <input id="o" size="7">
+H <input id="h" size="7">
+L <input id="l" size="7">
+C <input id="c" size="7">
+<button id="setAnchor">SET</button>
+<div id="anchorInfo"></div>
+</div>
+
+<!-- MISSIONS -->
+<div class="section">
+<b>MISSION / CONTEXT</b>
+<table>
+<thead><tr><th>TF</th><th>PRICE</th><th>ROLE</th><th>STATE</th></tr></thead>
+<tbody id="missionTable"></tbody>
+</table>
+<div id="strengthInfo"></div>
+</div>
+
+<!-- DECISION -->
+<div class="section">
+<b>DECISION</b><br/>
+<button id="buy">BUY</button>
+<button id="sell">SELL</button>
+<div id="entryZone" class="zone hidden"></div>
+<div id="lateWarn" class="warn hidden">RISIKO FLOATING BESAR</div>
+<div id="cooldown" class="info hidden">COOLDOWN AKTIF</div>
+</div>
+
+<div id="reason" class="section hidden ctx"></div>
+
+</div>
+
+<script>
+/* ================== STATE ================== */
+const TF=["1m","5m","15m","30m","1h"];
+const KEY="SCALPER_A_FINAL";
+let S=JSON.parse(localStorage.getItem(KEY)||"{}");
+function init(){
+  return{
+    price:null,
+    anchor:null,anchorState:"NONE",
+    tf:{},
+    context:null,contextPhase:"NONE",
+    cooldownUntil:0
+  };
+}
+["BTCUSDT","XAUUSD"].forEach(p=>{
+  if(!S[p])S[p]=init();
+  TF.forEach(tf=>{
+    if(!S[p].tf[tf])S[p].tf[tf]={prev:null,last:null,missions:[]};
+  });
+});
+function save(){localStorage.setItem(KEY,JSON.stringify(S))}
+
+/* ================== SESSION ================== */
+function getSession(){
+  const h=new Date().getUTCHours();
+  if(h>=0&&h<7)return"ASIA";
+  if(h>=7&&h<15)return"LONDON";
+  return"NEW YORK";
+}
+
+/* ================== ANCHOR ================== */
+const MAX=1000*60*60*4;
+function updateAnchor(p){
+  if(!p.anchor){p.anchorState="NONE";return}
+  const age=Date.now()-p.anchor.t;
+  if(p.anchor.bad)p.anchorState="INVALID";
+  else if(age>MAX)p.anchorState="EXPIRED";
+  else if(age>MAX*0.6)p.anchorState="SUSPECT";
+  else p.anchorState="OK";
+}
+
+/* ================== MISSIONS ================== */
+function createMission(d){
+  if(d.prev==null)return;
+  d.missions.push({
+    price:d.prev,
+    role:["15m","30m","1h"].includes(d.tf)?"CONTEXT":"TARGET",
+    state:"ACTIVE"
+  });
+}
+function updateMissions(d,close){
+  d.missions.forEach(m=>{
+    if(m.state==="ACTIVE"){
+      if(close===m.price)m.state="CONSUMED";
+      else if(m.role==="CONTEXT")m.state="CONTEXT";
+      else m.state="WAITING";
+    }
+  });
+}
+
+/* ================== CONTEXT ================== */
+function updateContext(p){
+  const ctxM=TF.map(tf=>p.tf[tf].missions.filter(m=>m.role==="CONTEXT"&&m.state==="CONTEXT")).flat();
+  if(!ctxM.length)return;
+  const cur=ctxM[0].price;
+  if(!p.context){
+    p.context=cur;p.contextPhase="VALID";return;
+  }
+  if(p.contextPhase==="VALID" && p.price!==null){
+    if(p.price<cur && p.price<p.context || p.price>cur && p.price>p.context){
+      // BODY CLOSE BREAK
+      p.contextPhase="BREACHED";
+    }
+  }
+}
+
+/* ================== STRENGTH ================== */
+function calcStrength(p){
+  let s=0;
+  if(p.anchorState==="OK")s+=30;
+  if(p.contextPhase==="VALID")s+=30;
+  const align=TF.filter(tf=>{
+    const m=p.tf[tf].missions.find(x=>x.state==="CONTEXT");
+    if(!m)return false;
+    return (m.price>p.price)===(p.context>p.price);
+  }).length;
+  s+=align*5;
+  if(Date.now()<p.cooldownUntil)s-=20;
+  return Math.max(0,Math.min(100,s));
+}
+function strengthLabel(v){
+  if(v>=70)return"STRONG";
+  if(v>=40)return"MODERATE";
+  return"WEAK";
+}
+
+/* ================== DECISION ================== */
+function decisionState(p){
+  if(p.anchorState!=="OK")return"WAIT";
+  if(p.contextPhase==="BREACHED")return"WAIT";
+  const m1=p.tf["1m"].missions.filter(m=>m.state!=="CONSUMED");
+  const m5=p.tf["5m"].missions.filter(m=>m.state!=="CONSUMED");
+  if(!m1.length||!m5.length)return"WAIT";
+  const lo=Math.min(m1[0].price,m5[0].price);
+  const hi=Math.max(m1[0].price,m5[0].price);
+  if(p.price>lo&&p.price<hi)return"GAS";
+  if(Math.abs(p.price-(lo+hi)/2)<(hi-lo)*1.5)return"STANDBY";
+  if(p.contextPhase==="VALID")return"EARLY";
+  return"LATE";
+}
+
+/* ================== WS BTC ================== */
+let ws;
+function connect(){
+  ws=new WebSocket("wss://stream.binance.com:9443/stream?streams="+TF.map(t=>"btcusdt@kline_"+t).join("/"));
+  ws.onmessage=e=>{
+    const k=JSON.parse(e.data).data.k;
+    if(!k.x)return;
+    const p=S.BTCUSDT,d=p.tf[k.i];
+    d.tf=k.i;
+    d.prev=d.last;d.last=+k.c;
+    p.price=+k.c;
+    createMission(d);updateMissions(d,+k.c);
+    updateAnchor(p);updateContext(p);
+    save();render();
+  };
+}
+connect();
+setInterval(()=>{if(!ws||ws.readyState>1)connect()},5000);
+
+/* ================== XAU LOOP ================== */
+setInterval(()=>{
+  const p=S.XAUUSD;if(!p.anchor)return;
+  p.price=p.anchor.C;
+  TF.forEach(tf=>{
+    const d=p.tf[tf];
+    d.tf=tf;d.prev=d.last;d.last=p.anchor.C;
+    createMission(d);updateMissions(d,p.anchor.C);
+  });
+  updateAnchor(p);updateContext(p);
+  save();render();
+},60000);
+
+/* ================== SOUND ================== */
+const AC=new(window.AudioContext||window.webkitAudioContext)();
+function gasSound(){
+  let i=0,t=setInterval(()=>{
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.frequency.value=1000;g.gain.value=.08;
+    o.connect(g);g.connect(AC.destination);
+    o.start();o.stop(AC.currentTime+.12);
+    if(++i===4)clearInterval(t);
+  },180);
+}
+
+/* ================== UI ================== */
+const pair=document.getElementById("pair");
+const status=document.getElementById("status");
+const missionTable=document.getElementById("missionTable");
+const entryZone=document.getElementById("entryZone");
+const lateWarn=document.getElementById("lateWarn");
+const cooldown=document.getElementById("cooldown");
+const reason=document.getElementById("reason");
+const strengthInfo=document.getElementById("strengthInfo");
+const overlay=document.getElementById("overlay");
+
+function render(){
+  const p=S[pair.value];
+  document.getElementById("session").textContent="SESSION: "+getSession();
+  updateAnchor(p);
+
+  status.textContent=pair.value+" · "+p.anchorState+" · CONTEXT "+p.contextPhase;
+
+  // missions table
+  let html="";
+  TF.forEach(tf=>{
+    const d=p.tf[tf];
+    if(!d.missions.length)html+=`<tr><td>${tf}</td><td>-</td><td>-</td><td>-</td></tr>`;
+    d.missions.forEach(m=>{
+      html+=`<tr><td>${tf}</td><td>${m.price.toFixed(2)}</td><td>${m.role}</td><td>${m.state}</td></tr>`;
+    });
+  });
+  missionTable.innerHTML=html;
+
+  // strength
+  const v=calcStrength(p);
+  strengthInfo.innerHTML=`STRENGTH: ${v}/100 (${strengthLabel(v)})`;
+
+  // decision
+  const st=decisionState(p);
+  [buy,sell].forEach(b=>{
+    b.className="";
+    b.classList.add(st.toLowerCase());
+  });
+
+  entryZone.classList.add("hidden");
+  lateWarn.classList.add("hidden");
+  cooldown.classList.toggle("hidden",Date.now()>=p.cooldownUntil);
+
+  if(st==="GAS"){
+    const m1=p.tf["1m"].missions[0],m5=p.tf["5m"].missions[0];
+    const lo=Math.min(m1.price,m5.price),hi=Math.max(m1.price,m5.price);
+    entryZone.textContent=`ENTRY IDEAL: M1–M5 (${lo.toFixed(2)} – ${hi.toFixed(2)})`;
+    entryZone.classList.remove("hidden");
+  }
+  if(st==="LATE")lateWarn.classList.remove("hidden");
+
+  // overlay lines
+  overlay.innerHTML="";
+  ["15m","30m","1h"].forEach(tf=>{
+    const m=p.tf[tf].missions.find(x=>x.state==="CONTEXT");
+    if(!m||!p.price)return;
+    const y=(1-(m.price/p.price))*overlay.clientHeight/2+overlay.clientHeight/2;
+    const div=document.createElement("div");
+    div.className="mline "+(tf==="15m"?"m15":tf==="30m"?"m30":"h1");
+    div.style.top=y+"px";
+    overlay.appendChild(div);
+  });
+}
+
+document.getElementById("setAnchor").onclick=()=>{
+  const O=+o.value,H=+h.value,L=+l.value,C=+c.value;
+  const p=S[pair.value];
+  if(H<Math.max(O,C)||L>Math.min(O,C)||O===C)
+    p.anchor={bad:true,t:Date.now()};
+  else p.anchor={O,H,L,C,t:Date.now()};
+  updateAnchor(p);save();render();
+};
+
+function act(dir){
+  const p=S[pair.value];
+  if(decisionState(p)!=="GAS")return;
+  p.cooldownUntil=Date.now()+60000;
+  gasSound();save();render();
+}
+buy.onclick=()=>act("BUY");
+sell.onclick=()=>act("SELL");
+
+document.getElementById("toggleReason").onclick=()=>reason.classList.toggle("hidden");
+
+function loadChart(){
+  const sym=pair.value==="BTCUSDT"?"BINANCE:BTCUSDT":"OANDA:XAUUSD";
+  tv.src=`https://s.tradingview.com/widgetembed/?symbol=${sym}&interval=60&theme=dark&timezone=Etc/UTC`;
+}
+pair.onchange=()=>{loadChart();render()};
+loadChart();render();
+</script>
+
+</body>
+</html>
