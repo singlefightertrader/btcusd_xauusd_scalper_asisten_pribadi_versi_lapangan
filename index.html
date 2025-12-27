@@ -2,12 +2,12 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<title>SCALPER ASSISTANT · FINAL A++ (LOCKED 52/52 + FIX6)</title>
+<title>SCALPER ASSISTANT · FINAL A++ (FIELD SAFE + HTF INFO)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 
 <style>
 body{margin:0;background:#000;color:#eafff5;font-family:Consolas,monospace}
-#top{display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #222}
+#top{display:flex;gap:8px;align-items:center;padding:8px;border-bottom:1px solid #222;flex-wrap:wrap}
 select,button,input{background:#111;color:#fff;border:1px solid #444;padding:6px}
 button.ui-active{box-shadow:0 0 8px rgba(0,255,255,.9);border-color:#00ffff}
 button.blocked{opacity:.35;pointer-events:none}
@@ -16,9 +16,21 @@ button.blocked{opacity:.35;pointer-events:none}
 #utc{color:#ffaa00;font-size:12px}
 #contextLabel{font-weight:bold}
 
+#tvWrap{position:relative}
 #tv{width:100%;height:36vh;border:none}
-#panel{height:64vh;overflow:auto;padding:8px}
 
+/* overlay lines */
+.line{
+ position:absolute;
+ left:0; right:0;
+ height:1px;
+ opacity:.9;
+}
+.m15{background:#ffff00}
+.m30{background:#00bfff}
+.h1{background:#bf00ff}
+
+#panel{height:64vh;overflow:auto;padding:8px}
 .section{border:1px solid #333;margin-bottom:8px;padding:8px;background:#070707}
 .hidden{display:none}
 .ok{color:#00ff99}
@@ -26,6 +38,7 @@ button.blocked{opacity:.35;pointer-events:none}
 .info{color:#ffaa00}
 .ctx{white-space:pre-line}
 .zone{margin-top:6px;padding:6px;border:1px dashed #00ffff;color:#00ffff}
+.small{font-size:12px;color:#aaa}
 </style>
 </head>
 
@@ -33,15 +46,22 @@ button.blocked{opacity:.35;pointer-events:none}
 
 <div id="top">
   <b>PAIR</b>
-  <select id="pair"><option>BTCUSDT</option><option>XAUUSD</option></select>
+  <select id="pair">
+    <option>BTCUSDT</option>
+    <option>XAUUSD</option>
+  </select>
   <b id="status">BOOT</b>
   <span id="contextLabel">CONTEXT NONE</span>
   <span id="session"></span>
   <span id="utc"></span>
   <button id="toggleReason">SHOW</button>
+  <button id="resyncBtn">RE-SYNC</button>
 </div>
 
-<iframe id="tv"></iframe>
+<div id="tvWrap">
+  <iframe id="tv"></iframe>
+  <div id="lines"></div>
+</div>
 
 <div id="panel">
 
@@ -60,6 +80,12 @@ C <input id="c" size="7">
 <div id="missionView" class="ctx"></div>
 <div id="strength" class="info"></div>
 <div id="priorityTarget" class="info"></div>
+<div id="contextFresh" class="ok hidden">CONTEXT FRESH</div>
+</div>
+
+<div class="section">
+<b>HTF COUNTDOWN</b>
+<div id="countdown" class="small"></div>
 </div>
 
 <div class="section">
@@ -72,12 +98,13 @@ C <input id="c" size="7">
 </div>
 
 <div id="reason" class="section hidden ctx"></div>
+
 </div>
 
 <script>
 /* ================= CORE ================= */
 const TF=["1m","5m","15m","30m","1h"];
-const KEY="SCALPER_FINAL_A_PP_LOCKED_FIX6";
+const KEY="SCALPER_FINAL_FIELD_SAFE_PLUS";
 let S=JSON.parse(localStorage.getItem(KEY)||"{}");
 
 function init(){
@@ -86,6 +113,7 @@ function init(){
   anchor:null,anchorState:"NONE",
   tf:{},
   contextPrice:null,contextState:"NONE",contextSide:null,
+  contextSince:null,
   cooldownUntil:0
  };
 }
@@ -136,6 +164,16 @@ function updateMission(d,close){
  });
 }
 
+/* ===== FIX HTF MISS ===== */
+function forceHTFMission(p){
+ ["15m","30m","1h"].forEach(tf=>{
+  const d=p.tf[tf];
+  if(d.last && !d.missions.some(m=>m.price===d.last)){
+    d.missions.push({price:d.last,role:"CONTEXT",status:"CONTEXT"});
+  }
+ });
+}
+
 /* ================= CONTEXT ================= */
 function isContextBreached(p){
  if(p.contextPrice==null||p.prevPrice==null)return false;
@@ -153,9 +191,14 @@ function updateContext(p){
  });
  if(!ctx.length){p.contextState="NONE";p.contextSide=null;return;}
  ctx.sort((a,b)=>Math.abs(p.price-a)-Math.abs(p.price-b));
- p.contextPrice=ctx[0];
- p.contextState=isContextBreached(p)?"BREACHED":"VALID";
- p.contextSide=p.price>=p.contextPrice?"ABOVE":"BELOW";
+ const c=ctx[0];
+ if(p.contextPrice!==c){
+   p.contextPrice=c;
+   p.contextSince=Date.now();
+ }
+ if(isContextBreached(p))p.contextState="BREACHED";
+ else p.contextState="VALID";
+ p.contextSide=p.price>=c?"ABOVE":"BELOW";
 }
 
 /* ================= ENTRY ZONE ================= */
@@ -166,53 +209,34 @@ function getEntryZone(p){
  return{lo:Math.min(m1.price,m5.price),hi:Math.max(m1.price,m5.price)};
 }
 
-/* ================= FIX #1 DECISION STATE FINAL ================= */
-function finalDecisionState(p){
- if(p.anchorState!=="OK") return "WAIT";
- if(p.contextState==="BREACHED") return "WAIT";
- if(Date.now()<p.cooldownUntil) return "WAIT";
- const z=getEntryZone(p);
- if(!z) return "WAIT";
- const mid=(z.lo+z.hi)/2;
- if(p.price>z.lo && p.price<z.hi) return "GAS";
- if(Math.abs(p.price-mid)<(z.hi-z.lo)) return "STANDBY";
- if(p.contextState==="VALID") return "EARLY";
- return "LATE";
-}
-
-/* ================= FIX #2 BUY ≠ SELL ================= */
-function validBuy(p,z){
- return p.contextSide==="ABOVE" && p.price<=z.hi;
-}
-function validSell(p,z){
- return p.contextSide==="BELOW" && p.price>=z.lo;
-}
-
-/* ================= FIX #3 TARGET TERDEKAT ================= */
-function nearestTarget(p){
- let levels=[];
- TF.forEach(tf=>{
-  p.tf[tf].missions.forEach(m=>{
-   if(m.status==="WAITING")levels.push(m.price);
-  });
- });
- if(!levels.length)return null;
- levels.sort((a,b)=>Math.abs(p.price-a)-Math.abs(p.price-b));
- return levels[0];
-}
-
 /* ================= STRENGTH ================= */
 function contextStrength(p){
- let score=0;
+ let s=0;
  ["15m","30m","1h"].forEach(tf=>{
-  if(p.tf[tf].missions.some(m=>m.status==="CONTEXT"))score+=25;
+  if(p.tf[tf].missions.some(m=>m.status==="CONTEXT"))s+=25;
  });
- if(p.anchorState==="OK")score+=15;
- if(p.contextState==="BREACHED")score=0;
- if(Date.now()<p.cooldownUntil)score-=20;
- return Math.max(0,Math.min(100,score));
+ if(p.anchorState==="OK")s+=15;
+ if(p.contextState==="BREACHED")s=0;
+ if(Date.now()<p.cooldownUntil)s-=20;
+ return Math.max(0,Math.min(100,s));
 }
 const strengthLabel=s=>s>=70?"STRONG":s>=40?"MODERATE":"WEAK";
+
+/* ================= DECISION ================= */
+function finalDecisionState(p){
+ if(p.anchorState!=="OK")return"WAIT";
+ if(p.contextState==="BREACHED")return"WAIT";
+ if(Date.now()<p.cooldownUntil)return"WAIT";
+ const z=getEntryZone(p);
+ if(!z)return"WAIT";
+ const mid=(z.lo+z.hi)/2;
+ if(p.price>z.lo&&p.price<z.hi)return"GAS";
+ if(Math.abs(p.price-mid)<(z.hi-z.lo))return"STANDBY";
+ if(p.contextState==="VALID")return"EARLY";
+ return"LATE";
+}
+function validBuy(p,z){return p.contextSide==="ABOVE"&&p.price<=z.hi;}
+function validSell(p,z){return p.contextSide==="BELOW"&&p.price>=z.lo;}
 
 /* ================= AUDIO ================= */
 const AC=new(window.AudioContext||window.webkitAudioContext)();
@@ -237,8 +261,11 @@ function connect(){
   const p=S.BTCUSDT,d=p.tf[k.i];
   p.prevPrice=p.price;
   d.tf=k.i;d.prev=d.last;d.last=+k.c;p.price=+k.c;
-  createMission(d);updateMission(d,+k.c);
-  updateAnchor(p);updateContext(p);
+  createMission(d);
+  updateMission(d,+k.c);
+  forceHTFMission(p);
+  updateAnchor(p);
+  updateContext(p);
   save();render();
  };
 }
@@ -249,15 +276,36 @@ setInterval(()=>{if(!ws||ws.readyState>1)connect()},5000);
 setInterval(()=>{
  const p=S.XAUUSD;
  if(!p.anchor)return;
- p.prevPrice=p.price;p.price=p.anchor.C;
+ p.prevPrice=p.price;
+ p.price=p.anchor.C;
  TF.forEach(tf=>{
   const d=p.tf[tf];
   d.tf=tf;d.prev=d.last;d.last=p.anchor.C;
-  createMission(d);updateMission(d,p.anchor.C);
+  createMission(d);
+  updateMission(d,p.anchor.C);
  });
- updateAnchor(p);updateContext(p);
+ forceHTFMission(p);
+ updateAnchor(p);
+ updateContext(p);
  save();render();
 },60000);
+
+/* ================= COUNTDOWN ================= */
+function tfMs(tf){
+ return tf==="15m"?900000:tf==="30m"?1800000:tf==="1h"?3600000:0;
+}
+function renderCountdown(p){
+ let out=[];
+ ["15m","30m","1h"].forEach(tf=>{
+  const d=p.tf[tf];
+  if(!d.last)return;
+  const next=tfMs(tf)-((Date.now()-d.last)%tfMs(tf));
+  const m=Math.floor(next/60000);
+  const s=Math.floor((next%60000)/1000);
+  out.push(`${tf.toUpperCase()} close in ${m}:${String(s).padStart(2,"0")}`);
+ });
+ countdown.textContent=out.join(" | ");
+}
 
 /* ================= UI ================= */
 const pair=document.getElementById("pair");
@@ -276,31 +324,37 @@ const buy=document.getElementById("buy");
 const sell=document.getElementById("sell");
 const toggleReason=document.getElementById("toggleReason");
 const reason=document.getElementById("reason");
-
-function blockButtons(block){
- [buy,sell].forEach(b=>b.classList.toggle("blocked",block));
-}
+const resyncBtn=document.getElementById("resyncBtn");
+const lines=document.getElementById("lines");
+const contextFresh=document.getElementById("contextFresh");
+const countdown=document.getElementById("countdown");
 
 function render(){
  const p=S[pair.value];
  session.textContent="SESSION: "+getSession();
  utc.textContent="UTC: "+utcNow();
-
  updateAnchor(p);updateContext(p);
+
  const ds=finalDecisionState(p);
  status.textContent=ds;
-
  buy.textContent="BUY · "+ds;
  sell.textContent="SELL · "+ds;
 
  contextLabel.textContent=
-  p.contextState==="BREACHED"?"STRUCTURE BREAK":`CONTEXT ${p.contextSide||"NONE"}`;
+  p.contextState==="BREACHED"
+   ?"STRUCTURE BREAK"
+   :"CONTEXT "+(p.contextSide||"NONE");
 
  const cs=contextStrength(p);
  strengthEl.textContent=`STRENGTH: ${cs}/100 (${strengthLabel(cs)})`;
 
- const nt=nearestTarget(p);
- priorityTarget.textContent=nt?`TARGET TERDEKAT: ${nt.toFixed(2)}`:"";
+ contextFresh.classList.toggle(
+  "hidden",
+  !(p.contextSince && Date.now()-p.contextSince < tfMs("15m"))
+ );
+
+ lateWarn.classList.toggle("hidden",ds!=="LATE");
+ cooldown.classList.toggle("hidden",Date.now()>=p.cooldownUntil);
 
  const z=getEntryZone(p);
  if(z&&(ds==="GAS"||ds==="STANDBY")){
@@ -308,9 +362,7 @@ function render(){
   entryZone.classList.remove("hidden");
  }else entryZone.classList.add("hidden");
 
- lateWarn.classList.toggle("hidden",ds!=="LATE");
- cooldown.classList.toggle("hidden",Date.now()>=p.cooldownUntil);
- blockButtons(Date.now()<p.cooldownUntil);
+ renderCountdown(p);
 
  let txt="";
  TF.forEach(tf=>{
@@ -319,6 +371,17 @@ function render(){
   });
  });
  missionView.textContent=txt.trim();
+
+ /* ===== VISUAL LINES ===== */
+ lines.innerHTML="";
+ ["15m","30m","1h"].forEach(tf=>{
+  const m=p.tf[tf].missions.find(x=>x.status==="CONTEXT");
+  if(!m)return;
+  const line=document.createElement("div");
+  line.className="line "+(tf==="15m"?"m15":tf==="30m"?"m30":"h1");
+  line.style.top="50%"; // visual only (non-price scaled)
+  lines.appendChild(line);
+ });
 }
 
 /* ================= EVENTS ================= */
@@ -329,30 +392,27 @@ setAnchor.onclick=()=>{
  if(H<Math.max(O,C)||L>Math.min(O,C)||O===C)p.anchor={bad:true,t:Date.now()};
  else p.anchor={O,H,L,C,t:Date.now()};
  updateAnchor(p);save();render();
- anchorNote.innerHTML=p.anchorState==="OK"
-  ?`✅ ANCHOR OK<br>${utcNow()}`
-  :`⚠️ ANCHOR ${p.anchorState}`;
+ anchorNote.innerHTML=p.anchorState==="OK"?"✅ ANCHOR OK":"⚠️ ANCHOR "+p.anchorState;
  anchorNote.className=p.anchorState==="OK"?"ok":"warn";
 };
 
-/* FIX #6 BUY / SELL FINAL */
 buy.onclick=()=>{
- buy.classList.add("ui-active");sell.classList.remove("ui-active");
  const p=S[pair.value];
  const ds=finalDecisionState(p);
  const z=getEntryZone(p);
  if(ds!=="GAS"||!z||!validBuy(p,z))return;
+ buy.classList.add("ui-active");sell.classList.remove("ui-active");
  status.textContent="BUY · GAS (SUPPORT)";
  p.cooldownUntil=Date.now()+60000;
  gasSound();save();render();
 };
 
 sell.onclick=()=>{
- sell.classList.add("ui-active");buy.classList.remove("ui-active");
  const p=S[pair.value];
  const ds=finalDecisionState(p);
  const z=getEntryZone(p);
  if(ds!=="GAS"||!z||!validSell(p,z))return;
+ sell.classList.add("ui-active");buy.classList.remove("ui-active");
  status.textContent="SELL · GAS (RESISTANCE)";
  p.cooldownUntil=Date.now()+60000;
  gasSound();save();render();
@@ -363,11 +423,23 @@ toggleReason.onclick=()=>{
  toggleReason.classList.toggle("ui-active",!reason.classList.contains("hidden"));
 };
 
+resyncBtn.onclick=()=>{
+ const p=S[pair.value];
+ updateAnchor(p);
+ forceHTFMission(p);
+ updateContext(p);
+ status.textContent="RE-SYNC OK";
+ resyncBtn.classList.add("ui-active");
+ save();render();
+ setTimeout(()=>resyncBtn.classList.remove("ui-active"),1200);
+};
+
 function loadChart(){
  tv.src=`https://s.tradingview.com/widgetembed/?symbol=${pair.value==="BTCUSDT"?"BINANCE:BTCUSDT":"OANDA:XAUUSD"}&interval=60&theme=dark&timezone=Etc/UTC`;
 }
 pair.onchange=()=>{loadChart();render();};
 loadChart();render();
 </script>
+
 </body>
 </html>
